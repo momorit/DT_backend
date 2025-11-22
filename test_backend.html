@@ -1,0 +1,277 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Backend API Tester</title>
+    <style>
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            max-width: 800px;
+            margin: 0 auto;
+            padding: 20px;
+            background-color: #f4f4f9;
+            color: #333;
+        }
+
+        h1 {
+            color: #2c3e50;
+            text-align: center;
+        }
+
+        .container {
+            background: white;
+            padding: 30px;
+            border-radius: 8px;
+            box-shadow: 0 2px 10px rgba(0, 0, 0, 0.1);
+        }
+
+        .form-group {
+            margin-bottom: 20px;
+        }
+
+        label {
+            display: block;
+            margin-bottom: 8px;
+            font-weight: bold;
+        }
+
+        input[type="text"],
+        textarea {
+            width: 100%;
+            padding: 10px;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            box-sizing: border-box;
+            font-size: 16px;
+        }
+
+        textarea {
+            height: 100px;
+            resize: vertical;
+        }
+
+        button {
+            background-color: #3498db;
+            color: white;
+            border: none;
+            padding: 10px 20px;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 16px;
+            transition: background-color 0.3s;
+        }
+
+        button:hover {
+            background-color: #2980b9;
+        }
+
+        .sensor-row {
+            display: flex;
+            gap: 10px;
+            margin-bottom: 10px;
+            align-items: center;
+        }
+
+        .sensor-row input {
+            flex: 1;
+        }
+
+        .remove-btn {
+            background-color: #e74c3c;
+            padding: 5px 10px;
+            font-size: 14px;
+        }
+
+        .remove-btn:hover {
+            background-color: #c0392b;
+        }
+
+        #response-area {
+            margin-top: 30px;
+            padding: 20px;
+            background-color: #eef2f7;
+            border-radius: 4px;
+            border-left: 5px solid #3498db;
+            display: none;
+        }
+
+        pre {
+            white-space: pre-wrap;
+            word-wrap: break-word;
+        }
+
+        .error {
+            border-left-color: #e74c3c !important;
+            background-color: #fdeaea !important;
+        }
+    </style>
+</head>
+
+<body>
+
+    <div class="container">
+        <h1>Backend API Tester</h1>
+
+        <div class="form-group">
+            <label for="question">Question:</label>
+            <textarea id="question" placeholder="Enter your question here..."></textarea>
+        </div>
+
+        <div class="form-group">
+            <label>Sensor Data:</label>
+            <div id="sensor-container">
+                <!-- Sensor rows will be added here -->
+            </div>
+            <button type="button" onclick="addSensorRow()" style="margin-top: 10px; background-color: #27ae60;">+ Add
+                Sensor</button>
+        </div>
+
+        <button type="button" onclick="sendQuery()">Send Query</button>
+
+        <div id="response-area">
+            <h3>Response:</h3>
+            <pre id="response-content"></pre>
+        </div>
+    </div>
+
+    <script>
+        function addSensorRow() {
+            const container = document.getElementById('sensor-container');
+            const div = document.createElement('div');
+            div.className = 'sensor-row';
+            div.innerHTML = `
+                <input type="text" placeholder="Key (e.g. temperature)" class="sensor-key">
+                <input type="text" placeholder="Value (e.g. 25.5)" class="sensor-value">
+                <button type="button" class="remove-btn" onclick="this.parentElement.remove()">X</button>
+            `;
+            container.appendChild(div);
+        }
+
+        async function sendQuery() {
+            const question = document.getElementById('question').value;
+            const responseArea = document.getElementById('response-area');
+            const responseContent = document.getElementById('response-content');
+
+            responseArea.style.display = 'none';
+            responseArea.classList.remove('error');
+
+            if (!question.trim()) {
+                alert("Please enter a question.");
+                return;
+            }
+
+            // Collect sensor data
+            const sensorData = {};
+            document.querySelectorAll('.sensor-row').forEach(row => {
+                const key = row.querySelector('.sensor-key').value.trim();
+                const value = row.querySelector('.sensor-value').value.trim();
+                if (key && value) {
+                    sensorData[key] = parseFloat(value) || value; // Try to parse as float, else keep string (though backend expects float)
+                }
+            });
+
+            const payload = {
+                question: question,
+                sensor_data: sensorData
+            };
+
+            try {
+                responseContent.textContent = "Sending request...";
+                responseArea.style.display = 'block';
+
+                const response = await fetch('http://localhost:8000/query', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify(payload)
+                });
+
+                const data = await response.json();
+
+                if (!response.ok) {
+                    throw new Error(data.detail || `Error: ${response.status} ${response.statusText}`);
+                }
+
+                // responseContent.textContent = JSON.stringify(data, null, 2);
+
+                // Clear previous results
+                responseContent.innerHTML = '';
+
+                // 1. Display Answer
+                const answerDiv = document.createElement('div');
+                answerDiv.style.marginBottom = '20px';
+                answerDiv.innerHTML = `<strong>Answer:</strong><p style="margin-top: 5px; font-size: 1.1em;">${data.answer}</p>`;
+                responseContent.appendChild(answerDiv);
+
+                // 2. Display Context
+                if (data.context && data.context.length > 0) {
+                    const contextDiv = document.createElement('div');
+                    contextDiv.style.marginBottom = '20px';
+                    contextDiv.innerHTML = `<strong>Context Used:</strong>`;
+                    const ul = document.createElement('ul');
+                    ul.style.marginTop = '5px';
+                    ul.style.paddingLeft = '20px';
+                    data.context.forEach(ctx => {
+                        const li = document.createElement('li');
+                        li.style.marginBottom = '10px';
+                        li.style.backgroundColor = '#fff';
+                        li.style.padding = '10px';
+                        li.style.border = '1px solid #ddd';
+                        li.style.borderRadius = '4px';
+                        li.textContent = ctx;
+                        ul.appendChild(li);
+                    });
+                    contextDiv.appendChild(ul);
+                    responseContent.appendChild(contextDiv);
+                }
+
+                // 3. Display Web Search Results
+                if (data.web_results && data.web_results.length > 0) {
+                    const webDiv = document.createElement('div');
+                    webDiv.style.marginBottom = '20px';
+                    webDiv.innerHTML = `<strong>Web Search Results:</strong>`;
+                    const ul = document.createElement('ul');
+                    ul.style.marginTop = '5px';
+                    ul.style.paddingLeft = '20px';
+                    data.web_results.forEach(res => {
+                        const li = document.createElement('li');
+                        li.style.marginBottom = '10px';
+                        li.style.backgroundColor = '#e8f4f8';
+                        li.style.padding = '10px';
+                        li.style.border = '1px solid #bde0e8';
+                        li.style.borderRadius = '4px';
+                        li.textContent = res;
+                        ul.appendChild(li);
+                    });
+                    webDiv.appendChild(ul);
+                    responseContent.appendChild(webDiv);
+                }
+
+                // 4. Display Sensor Data
+                if (data.sensor_data && Object.keys(data.sensor_data).length > 0) {
+                    const sensorDiv = document.createElement('div');
+                    sensorDiv.innerHTML = `<strong>Sensor Data Received:</strong>`;
+                    const pre = document.createElement('pre');
+                    pre.style.marginTop = '5px';
+                    pre.style.backgroundColor = '#f8f9fa';
+                    pre.style.padding = '10px';
+                    pre.textContent = JSON.stringify(data.sensor_data, null, 2);
+                    sensorDiv.appendChild(pre);
+                    responseContent.appendChild(sensorDiv);
+                }
+            } catch (error) {
+                responseArea.classList.add('error');
+                responseContent.textContent = error.message;
+            }
+        }
+
+        // Add one empty sensor row by default
+        addSensorRow();
+    </script>
+
+</body>
+
+</html>

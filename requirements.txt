@@ -5,3 +5,4 @@ requests
 pydantic
 httpx
 python-dotenv
+duckduckgo-search

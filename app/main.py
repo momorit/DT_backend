@@ -16,6 +16,7 @@ from pydantic import BaseModel, Field
 import chromadb
 from chromadb.api.models import Collection
 from chromadb.utils import embedding_functions
+from duckduckgo_search import DDGS
 
 # ---------------------------------------------------------------------------
 # Configuration
@@ -27,7 +28,7 @@ DOCUMENTS_DIR = Path(__file__).resolve().parent / "documents"
 COLLECTION_NAME = "local_text_documents"
 CHROMA_DB_DIR = Path(__file__).resolve().parent / "chroma_store"
 EMBEDDING_MODEL = "nomic-embed-text" # Kept for reference
-CHAT_MODEL = "llama3-70b-8192"
+CHAT_MODEL = "llama-3.3-70b-versatile"
 GROQ_API_URL = "https://api.groq.com/openai/v1"
 
 
@@ -39,7 +40,7 @@ class VoyageEmbeddingWrapper(embedding_functions.EmbeddingFunction):
     """EmbeddingFunction wrapper using VoyageAI embedding models."""
     def __init__(self, api_key: str):
         self.api_key = api_key
-        self.model_name = "voyage-2"
+        self.model_name = "voyage-3"
 
     def __call__(self, input: list[str]) -> list[list[float]]:
         headers = {
@@ -126,7 +127,23 @@ class QueryResponse(BaseModel):
     """Response payload returned to Unity."""
     answer: str
     context: List[str]
+    web_results: List[str]
     sensor_data: Dict[str, float]
+
+
+# ---------------------------------------------------------------------------
+# Web Search Helper
+# ---------------------------------------------------------------------------
+
+def perform_web_search(query: str, max_results: int = 3) -> List[str]:
+    """Perform a web search using DuckDuckGo."""
+    try:
+        with DDGS() as ddgs:
+            results = [r["body"] for r in ddgs.text(query, max_results=max_results)]
+        return results
+    except Exception as e:
+        print(f"Web search failed: {e}")
+        return []
 
 
 # ---------------------------------------------------------------------------
@@ -161,16 +178,23 @@ async def call_groq_chat(api_key: str, prompt: str) -> str:
     return data["choices"][0]["message"]["content"].strip()
 
 
-def assemble_prompt(question: str, context_chunks: List[str], sensor_data: Dict[str, float]) -> str:
-    """Combine retrieved document snippets and sensor readings into one prompt."""
-    context_block = "\n\n".join(context_chunks) if context_chunks else "No context found."
+def assemble_prompt(question: str, context_chunks: List[str], web_results: List[str], sensor_data: Dict[str, float]) -> str:
+    """Combine retrieved document snippets, web results, and sensor readings into one prompt."""
+    context_block = "\n\n".join(context_chunks) if context_chunks else "No local context found."
+    web_block = "\n\n".join(web_results) if web_results else "No web search results found."
     sensor_lines = "\n".join(f"- {key}: {value}" for key, value in sensor_data.items())
     sensor_block = sensor_lines if sensor_lines else "- (no sensor readings supplied)"
+    
     prompt = (
-        "Nutze die folgenden Dokumentauszüge und Sensordaten, um die Frage zu beantworten.\n\n"
-        f"Frage: {question}\n\n"
-        f"Sensordaten:\n{sensor_block}\n\n"
-        f"Dokumentauszüge:\n{context_block}"
+        "You are a professional and helpful assistant. Answer the question using the provided resources.\n"
+        "PRIORITY 1: Use the 'Context' (local documents) if it contains the answer.\n"
+        "PRIORITY 2: If the answer is not in the Context, use the 'Web Search Results'.\n"
+        "PRIORITY 3: If the answer is not in either, use your internal knowledge but state that you are doing so.\n"
+        "Do not make up information.\n\n"
+        f"Question: {question}\n\n"
+        f"Sensor Data:\n{sensor_block}\n\n"
+        f"Context (Local Documents):\n{context_block}\n\n"
+        f"Web Search Results:\n{web_block}"
     )
     return prompt
 
@@ -216,7 +240,7 @@ def create_app() -> FastAPI:
 
     @app.post("/query", response_model=QueryResponse)
     async def query_rag(payload: QueryPayload) -> QueryResponse:
-        """Handle questions from Unity by retrieving context and asking Groq LLM."""
+        """Handle questions from Unity by retrieving context, searching web, and asking Groq LLM."""
         if not payload.question.strip():
             raise HTTPException(status_code=400, detail="Question must not be empty.")
         
@@ -226,27 +250,33 @@ def create_app() -> FastAPI:
         if not groq_key:
              raise HTTPException(status_code=503, detail="LLM service not configured (check GROQ_API_KEY).")
 
-        # Retrieve the most relevant document snippets for the question.
-        # Run blocking Chroma query in threadpool
+        # 1. Retrieve the most relevant document snippets (Local RAG)
         results = await run_in_threadpool(
-            lambda: collection.query(query_texts=[payload.question], n_results=3)
+            lambda: collection.query(query_texts=[payload.question], n_results=1)
         )
         context_chunks = results.get("documents", [[]])[0]
 
-        # Assemble full prompt for LLM.
+        # 2. Perform Web Search
+        web_results = await run_in_threadpool(
+            lambda: perform_web_search(payload.question)
+        )
+
+        # 3. Assemble full prompt for LLM.
         prompt = assemble_prompt(
             question=payload.question,
             context_chunks=context_chunks,
+            web_results=web_results,
             sensor_data=payload.sensor_data,
         )
 
-        # Ask Groq chat model.
+        # 4. Ask Groq chat model.
         answer = await call_groq_chat(api_key=groq_key, prompt=prompt)
 
         # Return everything for Unity debugging.
         return QueryResponse(
             answer=answer,
             context=context_chunks,
+            web_results=web_results,
             sensor_data=payload.sensor_data
         )
 
