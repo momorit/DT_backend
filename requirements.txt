@@ -3,3 +3,5 @@ uvicorn
 chromadb
 requests
 pydantic
+httpx
+python-dotenv
